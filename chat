@@ -3,8 +3,8 @@ AzureDiagnostics
 | where OperationName == "GetSecret" // Filter for GetSecret operations
 | where Category == "AuditEvent"
 | where ResultType == "Failure" // Filter for failed attempts
-| extend RequestedSecret = tostring(parse_json(ExtendedProperties).requestedSecret)
-| extend CallerIPAddress = tostring(parse_json(ExtendedProperties).callerIPAddress)
+| extend RequestedSecret = tostring(parse_json(Properties).ResourceId)
+| extend CallerIPAddress = tostring(parse_json(Properties).CallerIpAddress)
 | where RequestedSecret contains "<your_secret_name>" // Replace <your_secret_name> with the name of the secret
 | join kind=inner (
     AzureDiagnostics
