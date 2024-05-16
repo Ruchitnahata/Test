@@ -1,15 +1,7 @@
 AzureDiagnostics
-| where ResourceProvider == "MICROSOFT.KEYVAULT" // Filter for Key Vault logs
-| where OperationName == "GetSecret" // Filter for GetSecret operations
-| where Category == "AuditEvent"
-| where ResultType == "Failure" // Filter for failed attempts
-| extend RequestedSecret = tostring(parse_json(Properties).ResourceId)
-| extend CallerIPAddress = tostring(parse_json(Properties).CallerIpAddress)
-| where RequestedSecret contains "<your_secret_name>" // Replace <your_secret_name> with the name of the secret
-| join kind=inner (
-    AzureDiagnostics
-    | where ResourceProvider == "MICROSOFT.DATAFACTORY" // Filter for Data Factory logs
-    | where OperationName == "ActivityPipelineRunStart"
-    | project CallerIPAddress
-) on CallerIPAddress
-| project CallerIPAddress, ResultDescription, ActivityId, OperationName, TimeGenerated
+| where ResourceType == "KEYVAULTS"
+| where OperationName == "GetSecret"
+| where Status == "Forbidden"
+| where TimeGenerated >= datetime(2024-05-01) and TimeGenerated <= datetime(2024-05-16)
+| extend ADF_IP = extract(@"\d+\.\d+\.\d+\.\d+", 0, CallerIpAddress)
+| project CallerIpAddress, ADF_IP
