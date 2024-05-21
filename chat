@@ -1,54 +1,16 @@
-provider "azurerm" {
-  features {}
+# Define the PostgreSQL Flexible Server Firewall Rule
+resource "azurerm_postgresql_firewall_rule" "allow_azure_services" {
+  name                = "allow-azure-services"
+  server_name         = azurerm_postgresql_server.example.name
+  resource_group_name = azurerm_resource_group.example.name
+  start_ip_address    = "0.0.0.0"
+  end_ip_address      = "0.0.0.0"  # All Azure services are allowed
 }
 
-# Fetch information about the existing primary PostgreSQL server
-data "azurerm_postgresql_server" "primary" {
-  name                = "primary-server-name"   # Replace with your primary server name
-  resource_group_name = "resource-group-name"   # Replace with your resource group name
-}
-
-# Create the PostgreSQL replica server
-resource "azurerm_postgresql_server" "replica" {
-  name                = "replica-server-name"    # Replace with your desired replica server name
-  location            = data.azurerm_postgresql_server.primary.location
-  resource_group_name = data.azurerm_postgresql_server.primary.resource_group_name
-
-  administrator_login          = data.azurerm_postgresql_server.primary.administrator_login
-  administrator_login_password = var.administrator_login_password
-  sku_name                     = data.azurerm_postgresql_server.primary.sku_name
-  version                      = data.azurerm_postgresql_server.primary.version
-  storage_mb                   = data.azurerm_postgresql_server.primary.storage_mb
-  backup_retention_days        = data.azurerm_postgresql_server.primary.backup_retention_days
-  geo_redundant_backup_enabled = data.azurerm_postgresql_server.primary.geo_redundant_backup_enabled
-  ssl_enforcement_enabled      = data.azurerm_postgresql_server.primary.ssl_enforcement_enabled
-  public_network_access_enabled= data.azurerm_postgresql_server.primary.public_network_access_enabled
-  auto_grow_enabled            = data.azurerm_postgresql_server.primary.auto_grow_enabled
-  infrastructure_encryption_enabled = data.azurerm_postgresql_server.primary.infrastructure_encryption_enabled
-
-  depends_on = [azurerm_postgresql_server.primary]
-
-  replication {
-    mode = "Geo"
-  }
-
-  tags = {
-    environment = "production"
-  }
-}
-
-# Ensure you set the administrator password as a variable
-variable "administrator_login_password" {
-  description = "The password for the PostgreSQL administrator"
-  type        = string
-  sensitive   = true
-}
-
-# Output the replica server name and connection string
-output "replica_server_name" {
-  value = azurerm_postgresql_server.replica.name
-}
-
-output "replica_server_fqdn" {
-  value = azurerm_postgresql_server.replica.fqdn
+# Update PostgreSQL Server Configuration
+resource "azurerm_postgresql_configuration" "example" {
+  name                = "log_connections"
+  server_name         = azurerm_postgresql_server.example.name
+  resource_group_name = azurerm_resource_group.example.name
+  value               = "on"
 }
