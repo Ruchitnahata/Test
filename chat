@@ -1,16 +1,63 @@
-# Define the PostgreSQL Flexible Server Firewall Rule
-resource "azurerm_postgresql_firewall_rule" "allow_azure_services" {
-  name                = "allow-azure-services"
-  server_name         = azurerm_postgresql_server.example.name
+# Define the virtual network and subnet
+resource "azurerm_virtual_network" "example" {
+  name                = "my-vnet"
+  address_space       = ["10.0.0.0/16"]
+  location            = "East US"
   resource_group_name = azurerm_resource_group.example.name
-  start_ip_address    = "0.0.0.0"
-  end_ip_address      = "0.0.0.0"  # All Azure services are allowed
 }
 
-# Update PostgreSQL Server Configuration
-resource "azurerm_postgresql_configuration" "example" {
-  name                = "log_connections"
-  server_name         = azurerm_postgresql_server.example.name
-  resource_group_name = azurerm_resource_group.example.name
-  value               = "on"
+resource "azurerm_subnet" "example" {
+  name                 = "my-subnet"
+  resource_group_name  = azurerm_resource_group.example.name
+  virtual_network_name = azurerm_virtual_network.example.name
+  address_prefixes     = ["10.0.1.0/24"]
 }
+
+# Deploy primary PostgreSQL Flexible Server instance
+resource "azurerm_postgresql_server" "primary" {
+  name                = "primary-server"
+  resource_group_name = azurerm_resource_group.example.name
+  location            = azurerm_resource_group.example.location
+  ...
+}
+
+# Deploy replica PostgreSQL Flexible Server instance
+resource "azurerm_postgresql_server" "replica" {
+  name                = "replica-server"
+  resource_group_name = azurerm_resource_group.example.name
+  location            = azurerm_resource_group.example.location
+  ...
+}
+
+# Configure virtual network rules for primary server
+resource "azurerm_postgresql_virtual_network_rule" "primary" {
+  server_name         = azurerm_postgresql_server.primary.name
+  resource_group_name = azurerm_postgresql_server.primary.resource_group_name
+  subnet_id           = azurerm_subnet.example.id
+}
+
+# Configure virtual network rules for replica server
+resource "azurerm_postgresql_virtual_network_rule" "replica" {
+  server_name         = azurerm_postgresql_server.replica.name
+  resource_group_name = azurerm_postgresql_server.replica.resource_group_name
+  subnet_id           = azurerm_subnet.example.id
+}
+
+# Create virtual endpoint for primary server
+resource "azurerm_postgresql_virtual_network_rule" "primary_endpoint" {
+  server_name         = azurerm_postgresql_server.primary.name
+  resource_group_name = azurerm_postgresql_server.primary.resource_group_name
+  subnet_id           = azurerm_subnet.example.id
+  virtual_network_subnet_id = azurerm_subnet.example.id
+  ignore_missing_vnet_service_endpoint = true
+}
+
+# Create virtual endpoint for replica server
+resource "azurerm_postgresql_virtual_network_rule" "replica_endpoint" {
+  server_name         = azurerm_postgresql_server.replica.name
+  resource_group_name = azurerm_postgresql_server.replica.resource_group_name
+  subnet_id           = azurerm_subnet.example.id
+  virtual_network_subnet_id = azurerm_subnet.example.id
+  ignore_missing_vnet_service_endpoint = true
+}
+
