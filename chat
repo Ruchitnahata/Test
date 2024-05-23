@@ -1,40 +1,30 @@
-provider "azurerm" {
-  features {}
-}
-
-provider "azapi" {
-  # Configure the AzAPI provider if necessary
-}
-
-# Assuming you have the primary and replica PostgreSQL flexible servers defined
-data "azurerm_postgresql_flexible_server" "primary" {
-  name                = "primary-server-name"
-  resource_group_name = "primary-resource-group"
-}
-
-resource "azurerm_postgresql_flexible_server" "replica" {
-  name                = "replica-server-name"
-  resource_group_name = "replica-resource-group"
-  location            = "your-location"
-  # Other necessary properties
-}
-
-# Using azapi_resource to create the virtual endpoint
-resource "azapi_resource" "postgres_virtual_endpoint" {
-  type      = "Microsoft.DBforPostgreSQL/flexibleServers/virtualEndpoints@2021-06-01-preview"
-  parent_id = azurerm_postgresql_flexible_server.replica.id
-  name      = "pg-test"
-
-  body = jsonencode({
-    properties = {
-      endpointType = "ReadWrite-members"
-      serverName   = data.azurerm_postgresql_flexible_server.primary.name
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "resources": [
+    {
+      "type": "Microsoft.DBforPostgreSQL/servers/virtualNetworkRules",
+      "apiVersion": "2021-06-01",
+      "name": "pg-test",
+      "dependsOn": [],
+      "properties": {
+        "virtualNetworkSubnetId": "[parameters('subnetId')]",
+        "ignoreMissingVnetServiceEndpoint": false,
+        "virtualNetworkRules": []
+      }
     }
-  })
-
-  depends_on = [azurerm_postgresql_flexible_server.replica]
+  ]
 }
 
-output "virtual_endpoint_id" {
-  value = azapi_resource.postgres_virtual_endpoint.id
+
+
+resource "azurerm_template_deployment" "example" {
+  name                = "example-deployment"
+  resource_group_name = azurerm_postgresql_flexible_server.replica.resource_group_name
+  deployment_mode     = "Incremental"
+  template_content    = file("azuredeploy.json")
+
+  parameters = {
+    subnetId = data.azurerm_subnet.example.id
+  }
 }
