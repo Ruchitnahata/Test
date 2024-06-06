@@ -1,30 +1,44 @@
-{
-  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
-  "contentVersion": "1.0.0.0",
-  "resources": [
-    {
-      "type": "Microsoft.DBforPostgreSQL/servers/virtualNetworkRules",
-      "apiVersion": "2021-06-01",
-      "name": "pg-test",
-      "dependsOn": [],
-      "properties": {
-        "virtualNetworkSubnetId": "[parameters('subnetId')]",
-        "ignoreMissingVnetServiceEndpoint": false,
-        "virtualNetworkRules": []
-      }
-    }
-  ]
-}
+from azure.servicebus import ServiceBusClient, ServiceBusMessage
+
+# Connection string to your Service Bus namespace
+connection_str = 'YOUR_SERVICE_BUS_CONNECTION_STRING'
+queue_name = 'YOUR_QUEUE_NAME'
+
+# Create a ServiceBusClient using the connection string
+servicebus_client = ServiceBusClient.from_connection_string(conn_str=connection_str, logging_enable=True)
+
+# Create a sender for the queue
+with servicebus_client:
+    sender = servicebus_client.get_queue_sender(queue_name=queue_name)
+    with sender:
+        # Create a message
+        message = ServiceBusMessage("Hello, Service Bus!")
+        
+        # Send the message
+        sender.send_messages(message)
+        print("Message sent successfully.")
 
 
 
-resource "azurerm_template_deployment" "example" {
-  name                = "example-deployment"
-  resource_group_name = azurerm_postgresql_flexible_server.replica.resource_group_name
-  deployment_mode     = "Incremental"
-  template_content    = file("azuredeploy.json")
+from azure.servicebus import ServiceBusClient
 
-  parameters = {
-    subnetId = data.azurerm_subnet.example.id
-  }
-}
+# Connection string to your Service Bus namespace
+connection_str = 'YOUR_SERVICE_BUS_CONNECTION_STRING'
+queue_name = 'YOUR_QUEUE_NAME'
+
+# Create a ServiceBusClient using the connection string
+servicebus_client = ServiceBusClient.from_connection_string(conn_str=connection_str, logging_enable=True)
+
+# Create a receiver for the queue
+with servicebus_client:
+    receiver = servicebus_client.get_queue_receiver(queue_name=queue_name)
+    with receiver:
+        # Receive a message from the queue
+        received_messages = receiver.receive_messages(max_message_count=1, max_wait_time=5)
+        
+        for msg in received_messages:
+            print(f"Received: {msg.body.decode('utf-8')}")
+            
+            # Complete the message so that it is removed from the queue
+            receiver.complete_message(msg)
+            print("Message completed successfully.")
