@@ -1,44 +1,41 @@
-from azure.servicebus import ServiceBusClient, ServiceBusMessage
+import logging
+import azure.functions as func
+from azure.storage.blob import BlobServiceClient
 
-# Connection string to your Service Bus namespace
-connection_str = 'YOUR_SERVICE_BUS_CONNECTION_STRING'
-queue_name = 'YOUR_QUEUE_NAME'
+def main(blob: func.InputStream):
+    logging.info(f"Processing blob: {blob.name} ({blob.length} bytes)")
 
-# Create a ServiceBusClient using the connection string
-servicebus_client = ServiceBusClient.from_connection_string(conn_str=connection_str, logging_enable=True)
+    # Connection string to your Azure Storage account
+    connection_string = "your_storage_account_connection_string"
 
-# Create a sender for the queue
-with servicebus_client:
-    sender = servicebus_client.get_queue_sender(queue_name=queue_name)
-    with sender:
-        # Create a message
-        message = ServiceBusMessage("Hello, Service Bus!")
-        
-        # Send the message
-        sender.send_messages(message)
-        print("Message sent successfully.")
+    # Create a BlobServiceClient object
+    blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+
+    # Destination container information
+    destination_container_name = "destination-container"
+
+    # Get the blob client for the destination blob
+    destination_blob_client = blob_service_client.get_blob_client(
+        container=destination_container_name,
+        blob=blob.name
+    )
+
+    # Upload the blob data to the destination container directly using the input stream
+    destination_blob_client.upload_blob(blob, overwrite=True)
+
+    logging.info(f"Blob {blob.name} has been transferred to {destination_container_name} container.")
 
 
 
-from azure.servicebus import ServiceBusClient
-
-# Connection string to your Service Bus namespace
-connection_str = 'YOUR_SERVICE_BUS_CONNECTION_STRING'
-queue_name = 'YOUR_QUEUE_NAME'
-
-# Create a ServiceBusClient using the connection string
-servicebus_client = ServiceBusClient.from_connection_string(conn_str=connection_str, logging_enable=True)
-
-# Create a receiver for the queue
-with servicebus_client:
-    receiver = servicebus_client.get_queue_receiver(queue_name=queue_name)
-    with receiver:
-        # Receive a message from the queue
-        received_messages = receiver.receive_messages(max_message_count=1, max_wait_time=5)
-        
-        for msg in received_messages:
-            print(f"Received: {msg.body.decode('utf-8')}")
-            
-            # Complete the message so that it is removed from the queue
-            receiver.complete_message(msg)
-            print("Message completed successfully.")
+{
+  "bindings": [
+    {
+      "name": "blob",
+      "type": "blobTrigger",
+      "direction": "in",
+      "path": "source-container/{name}",
+      "connection": "AzureWebJobsStorage"
+    }
+  ],
+  "scriptFile": "__init__.py"
+}
