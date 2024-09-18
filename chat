@@ -1,91 +1,59 @@
-Disaster Recovery (DR) Test Plan
-1. Introduction
-This test plan outlines the process for conducting a Disaster Recovery (DR) activity. The primary goal is to ensure that the failover, validation, failback, and production systems function as expected during and after the DR event.
+Disaster Recovery (DR) Failover Test Documentation
+1. Test Overview
+Test Date: [Insert Date]
+Test Location: [Insert Location, e.g., Primary Site, DR Site]
+Test Participants:
+[Name], [Role]
+[Name], [Role]
+Objective of Test:
+[Provide a brief description of the objective of the test, e.g., validate the recovery capabilities of critical systems during a failover event.]
+2. Recovery Steps
+Step-by-Step Process with Timing
+For each recovery step, track the start and end times and document the outcome.
 
-2. Objectives
-To validate the effectiveness and efficiency of the DR plan.
-To ensure minimal downtime during the DR activity.
-To confirm that all critical systems and applications can be recovered.
-To validate data integrity and application functionality post-failover and post-failback.
-3. Scope
-This test plan covers:
+Recovery Step	Start Time	End Time	Duration (minutes)	Outcome (Success/Failure)	Comments
+Step 1: Failover Trigger	[Insert Time]	[Insert Time]	[Insert Duration]	[Insert Success/Failure]	[Comments]
+Step 2: Data Replication	[Insert Time]	[Insert Time]	[Insert Duration]	[Insert Success/Failure]	[Comments]
+Step 3: System Reboot	[Insert Time]	[Insert Time]	[Insert Duration]	[Insert Success/Failure]	[Comments]
+[Continue for each step...]					
+3. Documenting Issues and Unexpected Activities
+Issues Encountered:
+[List any issues or challenges faced during the test, with details on their nature and impact.]
 
-Failover Procedure
-Validation Procedure
-Failback Procedure
-Production Validation Procedure
-4. Pre-Activity Checklist
-Before initiating the DR activity, ensure the following:
+Example: Issue with database synchronization, causing a 10-minute delay in the process.
+Activities Not Included in Recovery Plan:
+[Document any activities that arose during the test that were not initially planned for.]
 
-All stakeholders are informed and available.
-Communication channels are established.
-Backup procedures are validated and recent backups are available.
-A rollback plan is in place.
-5. Failover Procedure
-The failover procedure involves switching operations from the primary site to the DR site.
+Example: Unexpected network latency requiring manual intervention.
+4. Validation Activities
+Evidence of Validation
+Provide validation evidence for each critical step.
 
-5.1 Steps:
-Initiate Failover: Trigger the failover process according to the DR plan.
-Switch DNS: Update DNS settings to point to the DR site.
-Activate DR Systems: Start all necessary services and applications on the DR site.
-Verify Connectivity: Ensure all users and systems can connect to the DR site.
-Confirm Data Availability: Check that all critical data is available on the DR site.
-5.2 Expected Outcomes:
-All critical systems are operational at the DR site.
-Data integrity is maintained.
-Minimal downtime is experienced.
-6. Validation Procedure
-The validation procedure ensures that the DR site is functioning as expected after the failover.
+Validation Activity	Evidence Type	Description of Validation	Attached Evidence (Yes/No)
+Database Connection Test	Screenshot	Validated database connectivity post-failover	Yes
+Web Application Validation	Log Export	Confirmed that the application is accessible	Yes
+System Health Check	Checklist Completion	Checklist completed for service health	Yes
+[Continue for each activity...]			
+5. Scope Adjustments
+Scope Reduction:
+[If any activities were removed from the test scope, document them here.]
 
-6.1 Steps:
-Application Validation: Test all critical applications for functionality.
-Data Validation: Verify that data on the DR site matches the data on the primary site.
-Performance Validation: Assess the performance of the DR site compared to the primary site.
-User Access Validation: Ensure that users have the necessary access to applications and data.
-Logging and Monitoring Validation: Confirm that logging and monitoring systems are active and accurate.
-6.2 Expected Outcomes:
-All applications function correctly.
-Data is accurate and up-to-date.
-Performance is within acceptable limits.
-Users can access all required systems.
-7. Failback Procedure
-The failback procedure involves returning operations from the DR site to the primary site.
+Scope Addition:
+[If any additional activities were introduced during the test, describe them here.]
 
-7.1 Steps:
-Initiate Failback: Trigger the failback process according to the DR plan.
-Sync Data: Ensure that all data changes at the DR site are synchronized with the primary site.
-Switch DNS: Update DNS settings to point back to the primary site.
-Deactivate DR Systems: Shut down services and applications on the DR site.
-Verify Connectivity: Ensure all users and systems can connect to the primary site.
-7.2 Expected Outcomes:
-All critical systems are operational at the primary site.
-Data is synchronized and accurate.
-The DR site is properly deactivated.
-8. Production Validation Procedure
-The production validation procedure confirms that the primary site is fully operational and ready for regular operations.
+6. Post-Test Activities
+Jira Issues Creation
+For any issues encountered, create Jira stories for resolution. Document each issue ID and name here.
 
-8.1 Steps:
-Application Validation: Test all critical applications on the primary site.
-Data Validation: Verify that data on the primary site matches the data on the DR site before the failback.
-Performance Validation: Assess the performance of the primary site.
-User Access Validation: Ensure that users have the necessary access to applications and data.
-Logging and Monitoring Validation: Confirm that logging and monitoring systems are active and accurate.
-Business Process Validation: Ensure that all business processes are functioning as expected.
-8.2 Expected Outcomes:
-The primary site is fully operational.
-Data is accurate and consistent.
-All users and business processes are functioning normally.
-9. Post-Activity Review
-After the DR activity, conduct a review to assess the success of the failover, validation, failback, and production validation procedures.
+Issue ID	Issue Name	Description
+DR-123	Database synchronization failure	Issue encountered during replication
+DR-124	Slow system restart on DR site	Delayed service recovery post-failover
+Summary of Test Activity and Results
+Provide a summary of the test, including key results, successes, and areas of improvement.
 
-9.1 Review Points:
-Was the failover/failback process smooth?
-Were there any data inconsistencies?
-Did all applications function correctly?
-Were users able to access systems as expected?
-Were there any unexpected issues?
-9.2 Documentation:
-Record all findings, issues, and resolutions.
-Update the DR plan if necessary.
-10. Conclusion
-The DR Test Plan is critical for ensuring that your organization can recover quickly and effectively in the event of a disaster. By following this plan, you can minimize downtime, protect data integrity, and ensure business continuity.
+Summary:
+[Insert a high-level summary of the test activities, results, and whether objectives were met.]
+
+Example: The failover test was partially successful. The failover process triggered successfully, but a delay occurred due to database replication issues. All critical applications were restored after 35 minutes, within the recovery time objective.
+Evidence of Validation Activities
+Attach the validation evidence (screenshots, logs, checklists, etc.) as part of this documentation.
