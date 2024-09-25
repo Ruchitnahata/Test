@@ -1,59 +1,54 @@
-Disaster Recovery (DR) Failover Test Documentation
-1. Test Overview
-Test Date: [Insert Date]
-Test Location: [Insert Location, e.g., Primary Site, DR Site]
-Test Participants:
-[Name], [Role]
-[Name], [Role]
-Objective of Test:
-[Provide a brief description of the objective of the test, e.g., validate the recovery capabilities of critical systems during a failover event.]
-2. Recovery Steps
-Step-by-Step Process with Timing
-For each recovery step, track the start and end times and document the outcome.
+import psycopg2
+import pandas as pd
 
-Recovery Step	Start Time	End Time	Duration (minutes)	Outcome (Success/Failure)	Comments
-Step 1: Failover Trigger	[Insert Time]	[Insert Time]	[Insert Duration]	[Insert Success/Failure]	[Comments]
-Step 2: Data Replication	[Insert Time]	[Insert Time]	[Insert Duration]	[Insert Success/Failure]	[Comments]
-Step 3: System Reboot	[Insert Time]	[Insert Time]	[Insert Duration]	[Insert Success/Failure]	[Comments]
-[Continue for each step...]					
-3. Documenting Issues and Unexpected Activities
-Issues Encountered:
-[List any issues or challenges faced during the test, with details on their nature and impact.]
+# UAT Database Connection
+uat_conn = psycopg2.connect(
+    host="UAT_DB_HOST",
+    database="UAT_DB_NAME",
+    user="UAT_DB_USER",
+    password="UAT_DB_PASSWORD"
+)
 
-Example: Issue with database synchronization, causing a 10-minute delay in the process.
-Activities Not Included in Recovery Plan:
-[Document any activities that arose during the test that were not initially planned for.]
+# Local Database Connection
+local_conn = psycopg2.connect(
+    host="localhost",
+    database="LOCAL_DB_NAME",
+    user="LOCAL_DB_USER",
+    password="LOCAL_DB_PASSWORD"
+)
 
-Example: Unexpected network latency requiring manual intervention.
-4. Validation Activities
-Evidence of Validation
-Provide validation evidence for each critical step.
+def fetch_data_from_uat(query):
+    # Read data from UAT database
+    uat_df = pd.read_sql(query, uat_conn)
+    return uat_df
 
-Validation Activity	Evidence Type	Description of Validation	Attached Evidence (Yes/No)
-Database Connection Test	Screenshot	Validated database connectivity post-failover	Yes
-Web Application Validation	Log Export	Confirmed that the application is accessible	Yes
-System Health Check	Checklist Completion	Checklist completed for service health	Yes
-[Continue for each activity...]			
-5. Scope Adjustments
-Scope Reduction:
-[If any activities were removed from the test scope, document them here.]
+def load_data_to_local(dataframe, table_name):
+    cursor = local_conn.cursor()
+    
+    for index, row in dataframe.iterrows():
+        # Create insert query dynamically, example for inserting into `table_name`
+        insert_query = f"INSERT INTO {table_name} (col1, col2, col3) VALUES (%s, %s, %s)"
+        cursor.execute(insert_query, tuple(row))
+    
+    # Commit the transaction to local database
+    local_conn.commit()
+    cursor.close()
 
-Scope Addition:
-[If any additional activities were introduced during the test, describe them here.]
+# Example Usage
+try:
+    # 1. Extract data from UAT database
+    query = "SELECT col1, col2, col3 FROM your_table"
+    data_from_uat = fetch_data_from_uat(query)
 
-6. Post-Test Activities
-Jira Issues Creation
-For any issues encountered, create Jira stories for resolution. Document each issue ID and name here.
+    # 2. Load data into local database
+    load_data_to_local(data_from_uat, 'your_table')
 
-Issue ID	Issue Name	Description
-DR-123	Database synchronization failure	Issue encountered during replication
-DR-124	Slow system restart on DR site	Delayed service recovery post-failover
-Summary of Test Activity and Results
-Provide a summary of the test, including key results, successes, and areas of improvement.
+    print("Data migration completed successfully!")
 
-Summary:
-[Insert a high-level summary of the test activities, results, and whether objectives were met.]
+except Exception as e:
+    print(f"Error occurred: {e}")
 
-Example: The failover test was partially successful. The failover process triggered successfully, but a delay occurred due to database replication issues. All critical applications were restored after 35 minutes, within the recovery time objective.
-Evidence of Validation Activities
-Attach the validation evidence (screenshots, logs, checklists, etc.) as part of this documentation.
+finally:
+    # Close connections
+    uat_conn.close()
+    local_conn.close()
