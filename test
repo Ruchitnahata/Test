@@ -1,250 +1,180 @@
-import shutil
-import sys
-from datetime import date, datetime
-from glob import glob
+import warnings
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional, Tuple
 
 import pandas as pd
-from pytz import timezone
-from openpyxl import Workbook, load_workbook
+from openpyxl import load_workbook, Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.utils.cell import coordinate_to_tuple
 from openpyxl.styles import Alignment, Font, PatternFill, Side, Border
 from openpyxl.chart import BarChart, Reference
 
-from json_transformer import process_json
+# Ignore warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 
 
-class TimeConverter:
-    """Class for handling time conversion between time zones."""
+class DataAnalyzer:
+    """Performs data analysis and transformations on the DataFrame."""
 
-    @staticmethod
-    def convert_est_to_pst(date_string: str, format_string: str) -> datetime:
-        """
-        Convert a datetime string from EST to PST.
-
-        Args:
-            date_string (str): The date string to be converted.
-            format_string (str): The format in which the date string is provided.
-
-        Returns:
-            datetime: Converted datetime in PST.
-        """
-        est_tz = timezone("America/New_York")
-        naive_datetime = datetime.strptime(date_string, format_string)
-        est_datetime = est_tz.localize(naive_datetime)
-        pst_tz = timezone("US/Pacific")
-        return est_datetime.astimezone(pst_tz)
-
-
-class TimeUtils:
-    """Utility class for time-related operations."""
-
-    @staticmethod
-    def convert_seconds(milliseconds: int) -> str:
-        """
-        Convert milliseconds into HH:MM:SS.mmm format.
-
-        Args:
-            milliseconds (int): Milliseconds to convert.
-
-        Returns:
-            str: Time in HH:MM:SS.mmm format.
-        """
-        sec, milsec = divmod(milliseconds, 1000)
-        minute, sec = divmod(sec, 60)
-        hour, minute = divmod(minute, 60)
-        return f"{hour}:{minute:02}:{sec:02}.{milsec:03}"
-
-
-class DataFrameStyler:
-    """Class for styling DataFrames."""
-
-    @staticmethod
-    def highlight_greaterthan(x: pd.Series, length: int) -> List[str]:
-        """
-        Highlight rows based on the 'Status' field.
-
-        Args:
-            x (pd.Series): Row data.
-            length (int): Number of columns.
-
-        Returns:
-            List[str]: List of style attributes for each column.
-        """
-        if x["Status"] == "Not Found":
-            return ["background-color: yellow; border: 1px solid"] * length
-        elif x["Status"] == "Known Issue Notifi Gap":
-            return ["background-color: yellow; border: 1px solid"] * length
-        elif pd.isna(x["Message Event Id"]):
-            return ["background-color: orange; border: 1px solid"] * length
-        else:
-            return ["background-color: white; border: 1px solid"] * length
-
-
-class DataProcessor:
-    """Class for processing CSV and JSON data."""
-
-    def __init__(self):
-        self.processed_folder = Path("Input/Processed")
-        self.output_dir = Path("Output")
-        self.processed_folder.mkdir(parents=True, exist_ok=True)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-
-    def load_pd_data(self) -> pd.DataFrame:
-        """
-        Load the latest PD data file.
-
-        Returns:
-            pd.DataFrame: Loaded PD data.
-
-        Raises:
-            FileNotFoundError: If no PD data file is found.
-        """
-        try:
-            pd_file = glob("Input/pd_data_*.csv")[0]
-        except IndexError as error:
-            print(f"PD File not found: {error}")
-            sys.exit(0)
-        return pd.read_csv(pd_file)
-
-    def process_data(self, pd_df: pd.DataFrame, json_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Merge and process PD and JSON data into a final DataFrame.
-
-        Args:
-            pd_df (pd.DataFrame): PD data.
-            json_df (pd.DataFrame): JSON data.
-
-        Returns:
-            pd.DataFrame: Processed and merged DataFrame.
-        """
-        pd_df["NEWPOSTDATE"] = pd_df["POSTDATE"].apply(lambda x: x.split()[0])
-        pd_df["DNA Posted Time (PT)"] = pd_df["ACTDATETIME"].apply(
-            lambda x: timezone("US/Pacific").localize(datetime.strptime(x, "%Y-%m-%d %I:%M:%S %p"))
-        )
-        pd_df["RTXNNBR"] = pd_df["RTXNNBR"].apply(str)
-
-        json_df["SignedTranAmount"] = json_df.apply(
-            lambda row: -1 * float(row["Tran Amount"])
-            if row["Message Dr Cr Indicator"] == "Debit" and float(row["Tran Amount"]) > 0
-            else float(row["Tran Amount"]),
-            axis=1,
-        )
-
-        json_df["Shadowcore Entry Time"] = json_df.apply(
-            lambda row: timezone("UTC").localize(row["EventIdTimestamp"]).astimezone(timezone("US/Pacific"))
-            if row["EventIdTimestamp"] != "NA"
-            else timezone("UTC").localize(row["PostEventTimestamp"]).astimezone(timezone("US/Pacific")),
-            axis=1,
-        )
-
-        json_df["Shadowcore Commit Time"] = json_df["Shadowcore Commit Time"].apply(
-            lambda x: x if pd.isna(x) else timezone("US/Pacific").localize(x)
-        )
-
-        final_df = pd.merge(
-            pd_df,
-            json_df,
-            how="left",
-            left_on=["Account Number", "TRANAMT", "RTXNNBR", "NEWPOSTDATE"],
-            right_on=["Account Id", "SignedTranAmount", "Message Trace Number", "Message Post Date"],
-        )
-        return final_df
-
-    def save_to_excel(self, final_df: pd.DataFrame, filename: str, columns: List[str]) -> None:
-        """
-        Save the processed DataFrame to an Excel file.
-
-        Args:
-            final_df (pd.DataFrame): Processed data.
-            filename (str): Output file name.
-            columns (List[str]): Columns to include in the Excel file.
-        """
-        final_df.to_excel(self.output_dir / filename, index=False, columns=columns)
-
-
-class ReportGenerator:
-    """Class for generating reports and charts from processed data."""
-
-    def __init__(self, output_dir: Path, final_output_filename: str):
+    def __init__(self, output_dir: Path, filename: str):
         self.output_dir = output_dir
-        self.final_output_filename = final_output_filename
+        self.filename = filename
+        self.df = self.load_excel()
 
-    def generate_pivot_report(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Generate a pivot table report from the DataFrame.
+    def load_excel(self) -> pd.DataFrame:
+        """Load the Excel file and perform initial transformations."""
+        df = pd.read_excel(self.output_dir / self.filename, sheet_name="Sheet1")
+        df["Tran Code"] = df["Tran Code"].fillna("NA")
+        return df
 
-        Args:
-            df (pd.DataFrame): Input DataFrame.
+    def calculate_max_times(self) -> None:
+        """Calculate and print maximum processing times."""
+        max_dna_vs_shadowcore_entry_time = pd.to_datetime(self.df['DNA vs ShadowCoreEntryTime'], errors='coerce').max()
+        print(f"Maximum DNA vs ShadowCore Entry Time - "
+              f"{max_dna_vs_shadowcore_entry_time.minute} mins {max_dna_vs_shadowcore_entry_time.second} secs")
 
-        Returns:
-            pd.DataFrame: Pivot table report.
-        """
-        return pd.pivot_table(
-            df,
-            values="DNA Reference Number",
-            index=["Tran Code"],
-            columns=["Delay in Minutes"],
-            aggfunc="count",
+        max_shadowcore_processing_time = pd.to_datetime(self.df['Shadowcore Processing Time'], errors='coerce').max()
+        print(f"Maximum ShadowCore Processing Time - "
+              f"{max_shadowcore_processing_time.minute} mins {max_shadowcore_processing_time.second} secs")
+
+        max_total_dna_to_shadowcore_time = pd.to_datetime(self.df['Total DNA To ShadowCore Time'], errors='coerce').max()
+        print(f"Maximum Total DNA To ShadowCore Time - "
+              f"{max_total_dna_to_shadowcore_time.minute} mins {max_total_dna_to_shadowcore_time.second} secs")
+
+    def generate_pivot_table(self) -> pd.DataFrame:
+        """Generate a pivot table based on transaction data."""
+        df_pivot = pd.pivot_table(
+            self.df,
+            values='DNA Reference Number',
+            index=['Tran Code'],
+            columns=['Delay in Minutes'],
+            aggfunc='count',
             margins=True,
-            margins_name="Grand Total",
+            margins_name='Grand Total'
         )
+        return df_pivot
 
-    def apply_excel_formatting(self, ws) -> None:
-        """
-        Apply formatting to an Excel worksheet.
 
-        Args:
-            ws: Worksheet to format.
-        """
-        # Formatting the worksheet (merging cells, setting fonts, etc.)
-        ws.merge_cells(start_row=1, start_column=2, end_row=1, end_column=ws.max_column)
-        merged_cell = ws.cell(row=1, column=2)
-        merged_cell.value = "Delay in Minutes"
-        merged_cell.font = Font(bold=True)
-        merged_cell.alignment = Alignment(horizontal="center", vertical="center")
-        merged_cell.fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+class ExcelStyler:
+    """Handles Excel worksheet styling, formatting, and chart creation."""
 
-        for cell in ws[2]:
+    def __init__(self, workbook: Workbook, sheet_name: str):
+        self.wb = workbook
+        self.ws = self.wb[sheet_name]
+
+    def apply_header_styles(self) -> None:
+        """Apply styling to the worksheet header."""
+        for cell in self.ws[2]:
             cell.font = Font(bold=True)
             cell.fill = PatternFill(start_color="0099CCFF", end_color="0099CCFF", fill_type="solid")
 
-    def create_bar_chart(self, ws_barchart) -> None:
-        """
-        Create a bar chart in an Excel sheet.
+    def merge_cells_and_add_title(self) -> None:
+        """Merge specific cells and apply a title."""
+        self.ws.merge_cells(start_row=1, start_column=2, end_row=1, end_column=self.ws.max_column)
+        merged_cell = self.ws.cell(row=1, column=2)
+        merged_cell.value = "Delay in Minutes"
+        merged_cell.font = Font(bold=True)
+        merged_cell.alignment = Alignment(horizontal='center', vertical='center')
+        merged_cell.fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 
-        Args:
-            ws_barchart: Worksheet to add the chart.
-        """
-        chart = BarChart()
-        chart.title = "Notifi Report"
-        chart.x_axis.title = "Delay in Minutes"
-        chart.y_axis.title = "No. Of Records"
+    def set_cell_borders(self, side: Optional[Side] = None) -> None:
+        """Set borders for all cells in the worksheet."""
+        side = side or Side(border_style='thin', color='000000')
+        for cell in self.ws._cells.values():
+            cell.border = Border(top=side, bottom=side, left=side, right=side)
 
-        values = Reference(ws_barchart, min_col=2, min_row=1, max_col=2, max_row=ws_barchart.max_row)
-        categories = Reference(ws_barchart, min_col=1, min_row=2, max_row=ws_barchart.max_row)
+    def find_last_column_for_mins(self) -> int:
+        """Find the last column that contains 'mins'."""
+        for row in self.ws.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str) and "mins" in cell.value and "%age" not in cell.value:
+                    return coordinate_to_tuple(cell.coordinate)[1]
+        return 0
 
-        chart.add_data(values, titles_from_data=True)
-        chart.set_categories(categories)
-        chart.legend = None
-        chart.height = 11
-        chart.width = 30
-        ws_barchart.add_chart(chart, "A1")
+    def find_last_column_for_not_found(self) -> Optional[int]:
+        """Find the last column for 'Not Found' or 'CLS/Appr Status, Not Streamed'."""
+        for row in self.ws.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str) and "CLS/ Appr Status, Not Streamed" in cell.value:
+                    return coordinate_to_tuple(cell.coordinate)[1]
+        return None
+
+    def fill_cells_based_on_value(self, start_row: int, end_row: int, start_column: int, end_column: int) -> None:
+        """Fill cells with red color based on value > 0."""
+        for row in range(start_row, end_row + 1):
+            for col in range(start_column, end_column + 1):
+                cell = self.ws.cell(row=row, column=col)
+                if cell.value > 0:
+                    cell.fill = PatternFill(start_color="00FF0000", end_color="00FF0000", fill_type="solid")
 
 
-def main():
-    # Initialize processors
-    processor = DataProcessor()
-    pd_df = processor.load_pd_data()
+class BarChartCreator:
+    """Creates a bar chart for the Excel sheet."""
 
-    json_df = process_json()  # Assuming this function returns a DataFrame
+    def __init__(self, workbook: Workbook, ws_barchart_name: str):
+        self.ws_barchart = workbook.create_sheet(ws_barchart_name)
+        self.chart = BarChart()
 
-    # Process data
-    final_df = processor.process_data(pd_df, json_df)
+    def create_barchart(self, data: list) -> None:
+        """Add bar chart to the new worksheet."""
+        for row in data:
+            self.ws_barchart.append(row)
 
-    # Define final output filename and columns
-    final_output_filename = f"ProdNOTIFIReport_{date.today().strftime('%m%d%Y')}.xlsx"
-    final_columns = [
-        "Account Number", "Amount", "Post Date", "
+        self.chart.title = "Notifi Report"
+        self.chart.x_axis.title = "Delay in Minutes"
+        self.chart.y_axis.title = "No. Of Records"
+
+        values = Reference(self.ws_barchart, min_col=2, min_row=1, max_col=2, max_row=len(data))
+        categories = Reference(self.ws_barchart, min_col=1, min_row=2, max_row=len(data))
+
+        self.chart.add_data(values, titles_from_data=True)
+        self.chart.set_categories(categories)
+        self.chart.legend = None
+        self.chart.height = 11
+        self.chart.width = 30
+        self.ws_barchart.add_chart(self.chart, "A1")
+
+
+def main(output_dir: Path, final_output_filename: str) -> None:
+    """Main function to run the complete process."""
+    
+    # Data analysis
+    analyzer = DataAnalyzer(output_dir, final_output_filename)
+    analyzer.calculate_max_times()
+    
+    df_pivot = analyzer.generate_pivot_table()
+
+    # Load Excel workbook
+    wb = load_workbook(output_dir / final_output_filename)
+    ws_name = "Report Table"
+    wb.create_sheet(ws_name)
+    
+    # Populate pivot table into the new worksheet
+    ws = wb[ws_name]
+    for r_idx, row in enumerate(dataframe_to_rows(df_pivot, index=True, header=True)):
+        for c_idx, value in enumerate(row):
+            ws.cell(row=r_idx + (2 if r_idx == 0 else 1), column=c_idx + 1, value=value)
+
+    # Style Excel workbook
+    styler = ExcelStyler(wb, ws_name)
+    styler.apply_header_styles()
+    styler.merge_cells_and_add_title()
+    styler.set_cell_borders()
+
+    # Bar chart creation
+    chart_data = [
+        ("Delay in Minutes", "No. of Records"),  # Example header row
+        # Populate your data accordingly here
+    ]
+    barchart_creator = BarChartCreator(wb, "Bar Chart")
+    barchart_creator.create_barchart(chart_data)
+
+    # Save the workbook
+    wb.save(output_dir / final_output_filename)
+
+
+if __name__ == "__main__":
+    output_directory = Path("Output")
+    final_output_file = f"ProdNOTIFIReport_{date.today().strftime('%m%d%Y')}.xlsx"
+    main(output_directory, final_output_file)
+
