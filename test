@@ -1,180 +1,141 @@
-import warnings
-from pathlib import Path
-from typing import Optional, Tuple
+import azure.functions as func
+import logging
+import json
+from datetime import datetime
+from sqlalchemy import create_engine, Column, String, Boolean, DateTime, Numeric
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 
-import pandas as pd
-from openpyxl import load_workbook, Workbook
-from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.utils.cell import coordinate_to_tuple
-from openpyxl.styles import Alignment, Font, PatternFill, Side, Border
-from openpyxl.chart import BarChart, Reference
+Base = declarative_base()
 
-# Ignore warnings
-warnings.filterwarnings("ignore", category=UserWarning)
+# SQLAlchemy models
+class Transaction(Base):
+    __tablename__ = 'transactions'
+    trace_number = Column(String, primary_key=True)
+    debit_account_number = Column(String)
+    credit_account_number = Column(String)
+    transaction_amount = Column(Numeric)
+    withdrawal_description = Column(String)
+    deposit_description = Column(String)
+    withdrawal_transaction_type_code = Column(String)
+    deposit_transaction_type_code = Column(String)
+    clearing_category_code = Column(String)
+    fund_type_code = Column(String)
+    fund_type_detail_code = Column(String)
+    transaction_type = Column(String)
+    sent_to_vendor = Column(Boolean, default=None)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-class DataAnalyzer:
-    """Performs data analysis and transformations on the DataFrame."""
+class Account(Base):
+    __tablename__ = 'accounts'
+    account_number = Column(String, primary_key=True)
+    customer_id = Column(String)
+    date_opened = Column(DateTime)
+    account_holder_name = Column(String)
+    major_account_type = Column(String)
+    minor_account_type = Column(String)
+    account_status = Column(String)
+    available_balance = Column(Numeric)
+    current_balance = Column(Numeric)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    def __init__(self, output_dir: Path, filename: str):
-        self.output_dir = output_dir
-        self.filename = filename
-        self.df = self.load_excel()
 
-    def load_excel(self) -> pd.DataFrame:
-        """Load the Excel file and perform initial transformations."""
-        df = pd.read_excel(self.output_dir / self.filename, sheet_name="Sheet1")
-        df["Tran Code"] = df["Tran Code"].fillna("NA")
-        return df
+class AccountBalanceHistory(Base):
+    __tablename__ = 'account_balance_history'
+    id = Column(String, primary_key=True)
+    account_number = Column(String)
+    balance_before = Column(Numeric)
+    balance_after = Column(Numeric)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
-    def calculate_max_times(self) -> None:
-        """Calculate and print maximum processing times."""
-        max_dna_vs_shadowcore_entry_time = pd.to_datetime(self.df['DNA vs ShadowCoreEntryTime'], errors='coerce').max()
-        print(f"Maximum DNA vs ShadowCore Entry Time - "
-              f"{max_dna_vs_shadowcore_entry_time.minute} mins {max_dna_vs_shadowcore_entry_time.second} secs")
 
-        max_shadowcore_processing_time = pd.to_datetime(self.df['Shadowcore Processing Time'], errors='coerce').max()
-        print(f"Maximum ShadowCore Processing Time - "
-              f"{max_shadowcore_processing_time.minute} mins {max_shadowcore_processing_time.second} secs")
+# Database connection
+engine = create_engine('your_database_connection_string')
+Session = sessionmaker(bind=engine)
 
-        max_total_dna_to_shadowcore_time = pd.to_datetime(self.df['Total DNA To ShadowCore Time'], errors='coerce').max()
-        print(f"Maximum Total DNA To ShadowCore Time - "
-              f"{max_total_dna_to_shadowcore_time.minute} mins {max_total_dna_to_shadowcore_time.second} secs")
+def main(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info('Processing transaction request')
+    session = Session()
 
-    def generate_pivot_table(self) -> pd.DataFrame:
-        """Generate a pivot table based on transaction data."""
-        df_pivot = pd.pivot_table(
-            self.df,
-            values='DNA Reference Number',
-            index=['Tran Code'],
-            columns=['Delay in Minutes'],
-            aggfunc='count',
-            margins=True,
-            margins_name='Grand Total'
+    try:
+        # Step 1: Parse the request
+        transaction_data = req.get_json()
+
+        trace_number = transaction_data['trace_number']
+        debit_account_number = transaction_data['debit_account_number']
+        credit_account_number = transaction_data['credit_account_number']
+        transaction_amount = transaction_data['transaction_amount']
+
+        # Step 2: Check if the trace number already exists
+        existing_transaction = session.query(Transaction).filter_by(trace_number=trace_number).first()
+        if existing_transaction:
+            return func.HttpResponse(json.dumps({"message": "Transaction already exists", "status": 202}),
+                                     status_code=202)
+
+        # Step 3: Validate that accounts exist
+        debit_account = session.query(Account).filter_by(account_number=debit_account_number).first()
+        credit_account = session.query(Account).filter_by(account_number=credit_account_number).first()
+
+        if not debit_account or not credit_account:
+            return func.HttpResponse(json.dumps({"message": "One or both accounts not found", "status": 404}),
+                                     status_code=404)
+
+        # Step 4: Check if the debit account has sufficient funds
+        if debit_account.available_balance < transaction_amount:
+            return func.HttpResponse(json.dumps({"message": "Insufficient funds in debit account", "status": 400}),
+                                     status_code=400)
+
+        # Step 5: Record balance history for debit and credit accounts
+        debit_history = AccountBalanceHistory(
+            account_number=debit_account_number,
+            balance_before=debit_account.available_balance,
+            balance_after=debit_account.available_balance - transaction_amount
         )
-        return df_pivot
+        credit_history = AccountBalanceHistory(
+            account_number=credit_account_number,
+            balance_before=credit_account.available_balance,
+            balance_after=credit_account.available_balance + transaction_amount
+        )
 
+        session.add(debit_history)
+        session.add(credit_history)
 
-class ExcelStyler:
-    """Handles Excel worksheet styling, formatting, and chart creation."""
+        # Step 6: Update balances
+        debit_account.available_balance -= transaction_amount
+        credit_account.available_balance += transaction_amount
 
-    def __init__(self, workbook: Workbook, sheet_name: str):
-        self.wb = workbook
-        self.ws = self.wb[sheet_name]
+        # Step 7: Create the transaction
+        new_transaction = Transaction(
+            trace_number=trace_number,
+            debit_account_number=debit_account_number,
+            credit_account_number=credit_account_number,
+            transaction_amount=transaction_amount,
+            withdrawal_description=transaction_data.get('withdrawal_description', ''),
+            deposit_description=transaction_data.get('deposit_description', ''),
+            withdrawal_transaction_type_code=transaction_data.get('withdrawal_transaction_type_code', ''),
+            deposit_transaction_type_code=transaction_data.get('deposit_transaction_type_code', ''),
+            clearing_category_code=transaction_data.get('clearing_category_code', ''),
+            fund_type_code=transaction_data.get('fund_type_code', ''),
+            fund_type_detail_code=transaction_data.get('fund_type_detail_code', ''),
+            transaction_type=transaction_data.get('transaction_type', ''),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
+        )
 
-    def apply_header_styles(self) -> None:
-        """Apply styling to the worksheet header."""
-        for cell in self.ws[2]:
-            cell.font = Font(bold=True)
-            cell.fill = PatternFill(start_color="0099CCFF", end_color="0099CCFF", fill_type="solid")
+        session.add(new_transaction)
+        session.commit()
 
-    def merge_cells_and_add_title(self) -> None:
-        """Merge specific cells and apply a title."""
-        self.ws.merge_cells(start_row=1, start_column=2, end_row=1, end_column=self.ws.max_column)
-        merged_cell = self.ws.cell(row=1, column=2)
-        merged_cell.value = "Delay in Minutes"
-        merged_cell.font = Font(bold=True)
-        merged_cell.alignment = Alignment(horizontal='center', vertical='center')
-        merged_cell.fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+        # Step 8: Return success
+        return func.HttpResponse(json.dumps({"message": "Transaction processed", "status": 201}),
+                                 status_code=201)
 
-    def set_cell_borders(self, side: Optional[Side] = None) -> None:
-        """Set borders for all cells in the worksheet."""
-        side = side or Side(border_style='thin', color='000000')
-        for cell in self.ws._cells.values():
-            cell.border = Border(top=side, bottom=side, left=side, right=side)
-
-    def find_last_column_for_mins(self) -> int:
-        """Find the last column that contains 'mins'."""
-        for row in self.ws.iter_rows():
-            for cell in row:
-                if isinstance(cell.value, str) and "mins" in cell.value and "%age" not in cell.value:
-                    return coordinate_to_tuple(cell.coordinate)[1]
-        return 0
-
-    def find_last_column_for_not_found(self) -> Optional[int]:
-        """Find the last column for 'Not Found' or 'CLS/Appr Status, Not Streamed'."""
-        for row in self.ws.iter_rows():
-            for cell in row:
-                if isinstance(cell.value, str) and "CLS/ Appr Status, Not Streamed" in cell.value:
-                    return coordinate_to_tuple(cell.coordinate)[1]
-        return None
-
-    def fill_cells_based_on_value(self, start_row: int, end_row: int, start_column: int, end_column: int) -> None:
-        """Fill cells with red color based on value > 0."""
-        for row in range(start_row, end_row + 1):
-            for col in range(start_column, end_column + 1):
-                cell = self.ws.cell(row=row, column=col)
-                if cell.value > 0:
-                    cell.fill = PatternFill(start_color="00FF0000", end_color="00FF0000", fill_type="solid")
-
-
-class BarChartCreator:
-    """Creates a bar chart for the Excel sheet."""
-
-    def __init__(self, workbook: Workbook, ws_barchart_name: str):
-        self.ws_barchart = workbook.create_sheet(ws_barchart_name)
-        self.chart = BarChart()
-
-    def create_barchart(self, data: list) -> None:
-        """Add bar chart to the new worksheet."""
-        for row in data:
-            self.ws_barchart.append(row)
-
-        self.chart.title = "Notifi Report"
-        self.chart.x_axis.title = "Delay in Minutes"
-        self.chart.y_axis.title = "No. Of Records"
-
-        values = Reference(self.ws_barchart, min_col=2, min_row=1, max_col=2, max_row=len(data))
-        categories = Reference(self.ws_barchart, min_col=1, min_row=2, max_row=len(data))
-
-        self.chart.add_data(values, titles_from_data=True)
-        self.chart.set_categories(categories)
-        self.chart.legend = None
-        self.chart.height = 11
-        self.chart.width = 30
-        self.ws_barchart.add_chart(self.chart, "A1")
-
-
-def main(output_dir: Path, final_output_filename: str) -> None:
-    """Main function to run the complete process."""
-    
-    # Data analysis
-    analyzer = DataAnalyzer(output_dir, final_output_filename)
-    analyzer.calculate_max_times()
-    
-    df_pivot = analyzer.generate_pivot_table()
-
-    # Load Excel workbook
-    wb = load_workbook(output_dir / final_output_filename)
-    ws_name = "Report Table"
-    wb.create_sheet(ws_name)
-    
-    # Populate pivot table into the new worksheet
-    ws = wb[ws_name]
-    for r_idx, row in enumerate(dataframe_to_rows(df_pivot, index=True, header=True)):
-        for c_idx, value in enumerate(row):
-            ws.cell(row=r_idx + (2 if r_idx == 0 else 1), column=c_idx + 1, value=value)
-
-    # Style Excel workbook
-    styler = ExcelStyler(wb, ws_name)
-    styler.apply_header_styles()
-    styler.merge_cells_and_add_title()
-    styler.set_cell_borders()
-
-    # Bar chart creation
-    chart_data = [
-        ("Delay in Minutes", "No. of Records"),  # Example header row
-        # Populate your data accordingly here
-    ]
-    barchart_creator = BarChartCreator(wb, "Bar Chart")
-    barchart_creator.create_barchart(chart_data)
-
-    # Save the workbook
-    wb.save(output_dir / final_output_filename)
-
-
-if __name__ == "__main__":
-    output_directory = Path("Output")
-    final_output_file = f"ProdNOTIFIReport_{date.today().strftime('%m%d%Y')}.xlsx"
-    main(output_directory, final_output_file)
-
+    except Exception as e:
+        logging.error(f"Error processing transaction: {str(e)}")
+        session.rollback()
+        return func.HttpResponse(json.dumps({"message": "Transaction failed", "status": 500}),
+                                 status_code=500)
+    finally:
+        session.close()
