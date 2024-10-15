@@ -1,179 +1,158 @@
-import shutil
-import sys
-from datetime import date, datetime
-from glob import glob
-from pathlib import Path
+import azure.functions as functions
+from helpers.transaction_handler import (
+    validate_transaction,
+    process_transaction,
+    record_balance_history
+)
 
-import pandas as pd
-from pytz import timezone
-from openpyxl import Workbook, load_workbook
-from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.utils.cell import coordinate_to_tuple
-from openpyxl.styles import Alignment, Font, PatternFill, Side, Border
-from openpyxl.chart import BarChart, Reference
+# Create a new blueprint for the transaction processing
+transactions_blueprint = functions.Blueprint()
 
-from json_transformer import process_json
+@transactions_blueprint.function_name("process_transaction")
+@transactions_blueprint.route(route="transactions", methods=["POST"], auth_level="function")
+async def process_transaction(req: functions.HttpRequest) -> functions.HttpResponse:
+    """Main function to handle POST transactions"""
+    
+    try:
+        # Step 1: Parse the request body
+        transaction_data = req.get_json()
 
-
-class TimeConverter:
-    @staticmethod
-    def convert_est_to_pst(date_string: str, format_string: str):
-        est_tz = timezone("America/New_York")
-        naive_datetime = datetime.strptime(date_string, format_string)
-        est_datetime = est_tz.localize(naive_datetime)
-        pst_tz = timezone("US/Pacific")
-        return est_datetime.astimezone(pst_tz)
-
-    @staticmethod
-    def convert_seconds(milliseconds):
-        sec, milsec = divmod(milliseconds, 1000)
-        minute, sec = divmod(sec, 60)
-        hour, minute = divmod(minute, 60)
-        return f"{hour}:{minute:02d}:{sec:02d}.{milsec:03d}"
-
-
-class DataHighlighter:
-    @staticmethod
-    def highlight_greaterthan(x, length):
-        if x["Status"] == "Not Found" or x["Status"] == "Known Issue Notifi Gap":
-            return ["background-color: yellow; border: 1px solid"] * length
-        elif pd.isna(x["Message Event Id"]):
-            return ["background-color: orange; border: 1px solid"] * length
-        else:
-            return ["background-color: white; border: 1px solid"] * length
-
-
-class DataProcessor:
-    def __init__(self):
-        self.processed_folder = "Input/Processed"
-        self.output_dir = Path("Output")
-        self.final_output_filename = f"ProdNOTIFIReport_{date.today().strftime('%m%d%Y')}.xlsx"
-        self.final_columns = [
-            "Account Number", "Amount", "Post Date", "Activity DateTime", "Tran Code", "DNA Reference Number",
-            "Tran ID", "Debit Credit Indicator", "Message Event Id", "Event Type", "Status", "DNA Posted Time (PT)",
-            "Shadowcore Entry Time", "Shadowcore Commit Time", "DNA vs ShadowCoreEntryTime", "Shadowcore Processing Time",
-            "Total DNA To ShadowCore Time", "Delay in Hours", "Delay in Minutes",
-        ]
-
-    def load_pd_data(self):
-        try:
-            pd_file = glob("Input/pd_data_*.csv")[0]
-        except IndexError as error:
-            print(f"PD File not found: {error}")
-            sys.exit(0)
-
-        self.pd_df = pd.read_csv(pd_file)
-        shutil.move(pd_file, self.processed_folder + "/" + pd_file.split("\\")[1])
-        print(self.pd_df.shape)
-
-    def process_pd_data(self):
-        self.pd_df["NEWPOSTDATE"] = [x.split()[0] for x in self.pd_df["POSTDATE"]]
-        self.pd_df["DNA Posted Time (PT)"] = [
-            timezone("US/Pacific").localize(datetime.strptime(x, "%Y-%m-%d %I:%M:%S %p"))
-            for x in self.pd_df["ACTDATETIME"]
-        ]
-        self.pd_df["RTXNNBR"] = [str(x) for x in self.pd_df["RTXNNBR"]]
-
-    def process_json_data(self):
-        json_df = process_json()
-        json_df["SignedTranAmount"] = [
-            -1 * float(json_df["Tran Amount"][x])
-            if (json_df["Message Dr Cr Indicator"][x] == "Debit") and (float(json_df["Tran Amount"][x]) > 0)
-            else float(json_df["Tran Amount"][x])
-            for x in json_df.index
-        ]
-        json_df["Shadowcore Entry Time"] = [
-            (
-                timezone("UTC").localize(json_df["EventIdTimestamp"][x]).astimezone(timezone("US/Pacific"))
-                if json_df["EventIdTimestamp"][x] != "NA"
-                else timezone("UTC").localize(json_df["PostEventTimestamp"][x]).astimezone(timezone("US/Pacific"))
+        # Step 2: Validate the transaction data (check if trace number exists, accounts exist, and sufficient funds)
+        validation_response = await validate_transaction(transaction_data)
+        if validation_response["status"] != 200:
+            return functions.HttpResponse(
+                validation_response["message"], status_code=validation_response["status"]
             )
-            for x in json_df.index
-        ]
-        json_df["Shadowcore Commit Time"] = [
-            x if pd.isna(x) else timezone("US/Pacific").localize(x)
-            for x in json_df["Shadowcore Commit Time"]
-        ]
-        return json_df
 
-    def merge_data(self, json_df):
-        final_df = pd.merge(
-            self.pd_df,
-            json_df,
-            how="left",
-            left_on=["Account Number", "TRANAMT", "RTXNNBR", "NEWPOSTDATE"],
-            right_on=["Account Id", "SignedTranAmount", "Message Trace Number", "Message Post Date"],
+        # Step 3: Process the transaction (update account balances)
+        await process_transaction(transaction_data)
+
+        # Step 4: Record the balance history for both debit and credit accounts
+        await record_balance_history(transaction_data)
+
+        # Step 5: Return success (201)
+        return functions.HttpResponse(
+            "Transaction processed successfully", status_code=201
         )
-        print(final_df.shape)
-        return final_df
 
-    def process_final_dataframe(self, final_df):
-        final_df["Total DNA To ShadowCore Time"] = [
-            "" if pd.isna(x) else TimeConverter.convert_seconds(x.total_seconds() * 1000)
-            for x in final_df["Total DNA To ShadowCore Time"]
-        ]
-        final_df["DNA vs ShadowCoreEntryTime"] = [
-            "" if pd.isna(x) else TimeConverter.convert_seconds(x.total_seconds() * 1000)
-            for x in final_df["DNA vs ShadowCoreEntryTime"]
-        ]
-        final_df["Shadowcore Processing Time"] = [
-            "" if pd.isna(x) else TimeConverter.convert_seconds(x.total_seconds() * 1000)
-            for x in final_df["Shadowcore Processing Time"]
-        ]
-
-        final_df.rename(
-            columns={
-                "TRANAMT": "Amount",
-                "NEWPOSTDATE": "Post Date",
-                "ACTDATETIME": "Activity DateTime",
-                "TRAN CODE": "Tran Code",
-                "RTXNNBR": "DNA Reference Number",
-                "Message Dr Cr Indicator": "Debit Credit Indicator",
-            },
-            inplace=True,
+    except Exception as e:
+        logging.error(f"Error processing transaction: {str(e)}")
+        return functions.HttpResponse(
+            "Transaction failed due to an internal error", status_code=500
         )
-        return final_df
-
-    def save_excel(self, final_df):
-        final_df.to_excel(self.output_dir / self.final_output_filename, index=False, columns=self.final_columns)
 
 
-class ExcelReportGenerator:
-    def __init__(self, file_path):
-        self.file_path = file_path
-        self.wb = load_workbook(file_path)
-        self.ws = self.wb.create_sheet("Report Table")
+from sqlalchemy.orm import sessionmaker
+from models import Transaction, Account, AccountBalanceHistory
+from datetime import datetime
+import logging
 
-    def generate_pivot_table(self, df_pivot):
-        for r_idx, row in enumerate(dataframe_to_rows(df_pivot, index=True, header=True)):
-            for c_idx, value in enumerate(row):
-                self.ws.cell(row=r_idx + 1, column=c_idx + 1, value=value)
-        self.wb.save(self.file_path)
+Session = sessionmaker(bind=engine)  # Database engine configuration should be here
 
-    def add_chart(self):
-        ws_barchart = self.wb.create_sheet("Bar Chart")
-        chart = BarChart()
-        chart.title = "Notifi Report"
-        chart.x_axis.title = "Delay in Minutes"
-        chart.y_axis.title = "No. Of Records"
-        self.wb.save(self.file_path)
+async def validate_transaction(transaction_data):
+    session = Session()
 
-    def finalize_report(self):
-        self.wb.save(self.file_path)
+    try:
+        trace_number = transaction_data['trace_number']
+        debit_account_number = transaction_data['debit_account_number']
+        credit_account_number = transaction_data['credit_account_number']
+        transaction_amount = transaction_data['transaction_amount']
+
+        # Check if the trace number already exists
+        existing_transaction = session.query(Transaction).filter_by(trace_number=trace_number).first()
+        if existing_transaction:
+            return {"message": "Transaction already exists", "status": 202}
+
+        # Check if accounts exist
+        debit_account = session.query(Account).filter_by(account_number=debit_account_number).first()
+        credit_account = session.query(Account).filter_by(account_number=credit_account_number).first()
+
+        if not debit_account or not credit_account:
+            return {"message": "One or both accounts not found", "status": 404}
+
+        # Check if the debit account has sufficient funds
+        if debit_account.available_balance < transaction_amount:
+            return {"message": "Insufficient funds in debit account", "status": 400}
+
+        return {"message": "Validation successful", "status": 200}
+    
+    except Exception as e:
+        logging.error(f"Error validating transaction: {str(e)}")
+        return {"message": "Internal validation error", "status": 500}
+    
+    finally:
+        session.close()
 
 
-if __name__ == "__main__":
-    processor = DataProcessor()
-    processor.load_pd_data()
-    processor.process_pd_data()
+async def process_transaction(transaction_data):
+    session = Session()
 
-    json_data = processor.process_json_data()
-    final_data = processor.merge_data(json_data)
-    final_df = processor.process_final_dataframe(final_data)
+    try:
+        debit_account_number = transaction_data['debit_account_number']
+        credit_account_number = transaction_data['credit_account_number']
+        transaction_amount = transaction_data['transaction_amount']
 
-    processor.save_excel(final_df)
+        # Fetch debit and credit accounts
+        debit_account = session.query(Account).filter_by(account_number=debit_account_number).first()
+        credit_account = session.query(Account).filter_by(account_number=credit_account_number).first()
 
-    # Generate the final report and pivot table
-    report_generator = ExcelReportGenerator(processor.output_dir / processor.final_output_filename)
-    report_generator.add_chart()
-    report_generator.finalize_report()
+        # Update balances
+        debit_account.available_balance -= transaction_amount
+        credit_account.available_balance += transaction_amount
+
+        # Create a new transaction entry
+        new_transaction = Transaction(
+            trace_number=transaction_data['trace_number'],
+            debit_account_number=debit_account_number,
+            credit_account_number=credit_account_number,
+            transaction_amount=transaction_amount,
+            withdrawal_description=transaction_data.get('withdrawal_description', ''),
+            deposit_description=transaction_data.get('deposit_description', ''),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
+        )
+
+        session.add(new_transaction)
+        session.commit()
+
+    except Exception as e:
+        logging.error(f"Error processing transaction: {str(e)}")
+        session.rollback()
+
+    finally:
+        session.close()
+
+
+async def record_balance_history(transaction_data):
+    session = Session()
+
+    try:
+        debit_account_number = transaction_data['debit_account_number']
+        credit_account_number = transaction_data['credit_account_number']
+        transaction_amount = transaction_data['transaction_amount']
+
+        debit_account = session.query(Account).filter_by(account_number=debit_account_number).first()
+        credit_account = session.query(Account).filter_by(account_number=credit_account_number).first()
+
+        # Record balance history for debit and credit accounts
+        debit_history = AccountBalanceHistory(
+            account_number=debit_account_number,
+            balance_before=debit_account.available_balance + transaction_amount,
+            balance_after=debit_account.available_balance
+        )
+        credit_history = AccountBalanceHistory(
+            account_number=credit_account_number,
+            balance_before=credit_account.available_balance - transaction_amount,
+            balance_after=credit_account.available_balance
+        )
+
+        session.add(debit_history)
+        session.add(credit_history)
+        session.commit()
+
+    except Exception as e:
+        logging.error(f"Error recording balance history: {str(e)}")
+        session.rollback()
+
+    finally:
+        session.close()
