@@ -1,6 +1,90 @@
-@classmethod
-    def __init_subclass__(cls):
-        """Import models when the subclass is initialized."""
-        from models.account import Account  # Import your models here
-        from models.customer import Customer  # Import other models here
-        configure_mappers()  # Configure mappers for SQLAlchemy
+from models.customer import Customer
+from models.account import Account
+from models.transaction import Transaction
+import logging
+from sqlalchemy import select
+from decimal import Decimal
+
+class TransactionDAO:
+    def __init__(self, session):
+        self.session = session
+
+    async def transaction_exists(self, trace_number):
+        query = select(Transaction).filter_by(trace_number=trace_number)
+        existing_transaction = await self.session.execute(query)
+        return existing_transaction.scalars().first()
+
+    async def get_account(self, account_number):
+        query = select(Account).filter_by(account_number=account_number)
+        account = await self.session.execute(query)
+        return account.scalars().first()
+
+    async def create_transaction(self, transaction):
+        self.session.add(transaction)
+        await self.session.commit()
+
+async def validate_transaction(transaction_schema, session):
+    try:
+        async with session.begin():
+            dao = TransactionDAO(session)
+            trace_number = transaction_schema.trace_number
+            debit_account_number = transaction_schema.debit_account_number
+            credit_account_number = transaction_schema.credit_account_number
+            transaction_amount = transaction_schema.transaction_amount
+
+            # Check if the trace number already exists
+            if await dao.transaction_exists(trace_number):
+                return {"message": "Transaction already exists", "status": 202}
+            
+            # Check if accounts exist
+            debit_account = await dao.get_account(debit_account_number)
+            credit_account = await dao.get_account(credit_account_number)
+            if not debit_account or not credit_account:
+                return {"message": "One or both accounts not found", "status": 404}
+
+            # Check if the debit account has sufficient funds
+            if debit_account.available_balance < transaction_amount:
+                return {"message": "Insufficient funds in debit account", "status": 400}
+
+            return {"message": "Validation successful", "status": 200}
+    
+    except Exception as e:
+        logging.error(f"Error validating transaction: {str(e)}")
+        return {"message": f"Internal validation error {str(e)}", "status": 500}
+
+async def handle_transaction(transaction_schema, session):
+    try:
+        dao = TransactionDAO(session)
+        debit_account_number = transaction_schema.debit_account_number
+        credit_account_number = transaction_schema.credit_account_number
+        transaction_amount = transaction_schema.transaction_amount
+
+        # Fetch debit and credit accounts
+        debit_account = await dao.get_account(debit_account_number)
+        credit_account = await dao.get_account(credit_account_number)
+
+        # Update balances
+        debit_account.available_balance -= Decimal(transaction_amount)
+        credit_account.available_balance += Decimal(transaction_amount)
+
+        # Create a new transaction entry
+        new_transaction = Transaction(
+            trace_number=transaction_schema.trace_number,
+            debit_account_number=debit_account_number,
+            credit_account_number=credit_account_number,
+            transaction_amount=transaction_amount,
+            withdrawal_description=transaction_schema.withdrawal_description,
+            withdrawal_transaction_type_code=transaction_schema.withdrawal_transaction_type_code,
+            deposit_transaction_type_code=transaction_schema.deposit_transaction_type_code,
+            deposit_description=transaction_schema.deposit_description,
+            clearing_category_code=transaction_schema.clearing_category_code,
+            fund_type_code=transaction_schema.fund_type_code,
+            fund_type_detail_code=transaction_schema.fund_type_detail_code,
+            transaction_type=transaction_schema.transaction_type
+        )
+
+        await dao.create_transaction(new_transaction)
+
+    except Exception as e:
+        logging.error(f"Error processing transaction: {str(e)}")
+        await session.rollback()
