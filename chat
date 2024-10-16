@@ -1,16 +1,6 @@
-class Base(DeclarativeBase, AsyncAttrs):
-    metadata = MetaData(naming_convention=naming_convention)
-
-    @classmethod
-    def _setup_class(cls):
-        """Import models to ensure they are loaded with the Base class."""
-        from models.account import Account  # Adjust the import path according to your project structure
-        from models.customer import Customer  # Adjust the import path according to your project structure
-        # Import any other models as needed
-
-        # Ensure all models are registered with the Base class
-        cls.registry.mappers.clear()  # Clear existing mappers
-        cls.registry.configure()  # Configure mappers
-
-# Call the setup method to import models
-Base._setup_class()
+@classmethod
+    def __init_subclass__(cls):
+        """Import models when the subclass is initialized."""
+        from models.account import Account  # Import your models here
+        from models.customer import Customer  # Import other models here
+        configure_mappers()  # Configure mappers for SQLAlchemy
