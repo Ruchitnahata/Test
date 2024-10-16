@@ -1,9 +1,8 @@
-from models.customer import Customer
+# dao/transaction_dao.py
+
 from models.account import Account
 from models.transaction import Transaction
-import logging
 from sqlalchemy import select
-from decimal import Decimal
 
 class TransactionDAO:
     def __init__(self, session):
@@ -22,6 +21,15 @@ class TransactionDAO:
     async def create_transaction(self, transaction):
         self.session.add(transaction)
         await self.session.commit()
+
+
+
+# helpers/transaction_helpers.py
+
+from models.transaction import Transaction
+import logging
+from decimal import Decimal
+from dao.transaction_dao import TransactionDAO  # Importing the DAO
 
 async def validate_transaction(transaction_schema, session):
     try:
