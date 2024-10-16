@@ -2,26 +2,57 @@
 
 from models.account import Account
 from models.transaction import Transaction
+from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional
 from sqlalchemy import select
 
 class TransactionDAO:
-    def __init__(self, session):
+    def __init__(self, session: AsyncSession):
+        """
+        Initializes the TransactionDAO with the provided database session.
+        
+        Args:
+            session (AsyncSession): The SQLAlchemy session for database interactions.
+        """
         self.session = session
 
-    async def transaction_exists(self, trace_number):
+    async def transaction_exists(self, trace_number: str) -> Optional[Transaction]:
+        """
+        Checks if a transaction with the given trace number already exists in the database.
+        
+        Args:
+            trace_number (str): The trace number of the transaction.
+        
+        Returns:
+            Optional[Transaction]: The existing transaction if found, otherwise None.
+        """
         query = select(Transaction).filter_by(trace_number=trace_number)
         existing_transaction = await self.session.execute(query)
         return existing_transaction.scalars().first()
 
-    async def get_account(self, account_number):
+    async def get_account(self, account_number: str) -> Optional[Account]:
+        """
+        Fetches the account with the given account number from the database.
+        
+        Args:
+            account_number (str): The account number to look up.
+        
+        Returns:
+            Optional[Account]: The account if found, otherwise None.
+        """
         query = select(Account).filter_by(account_number=account_number)
         account = await self.session.execute(query)
         return account.scalars().first()
 
-    async def create_transaction(self, transaction):
+    async def create_transaction(self, transaction: Transaction) -> None:
+        """
+        Creates a new transaction in the database and commits the transaction.
+        
+        Args:
+            transaction (Transaction): The transaction object to be added to the database.
+        """
         self.session.add(transaction)
         await self.session.commit()
-
 
 
 # helpers/transaction_helpers.py
@@ -29,9 +60,23 @@ class TransactionDAO:
 from models.transaction import Transaction
 import logging
 from decimal import Decimal
+from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Dict, Any
 from dao.transaction_dao import TransactionDAO  # Importing the DAO
+from schemas.transaction_schema import TransactionSchema  # Assuming a schema file for validation
 
-async def validate_transaction(transaction_schema, session):
+async def validate_transaction(transaction_schema: TransactionSchema, session: AsyncSession) -> Dict[str, Any]:
+    """
+    Validates the transaction by checking if the transaction already exists,
+    verifying if both accounts exist, and ensuring sufficient funds in the debit account.
+
+    Args:
+        transaction_schema (TransactionSchema): The schema object containing transaction details.
+        session (AsyncSession): The SQLAlchemy session for database interactions.
+
+    Returns:
+        Dict[str, Any]: A dictionary with a message and status code indicating the result of the validation.
+    """
     try:
         async with session.begin():
             dao = TransactionDAO(session)
@@ -60,7 +105,16 @@ async def validate_transaction(transaction_schema, session):
         logging.error(f"Error validating transaction: {str(e)}")
         return {"message": f"Internal validation error {str(e)}", "status": 500}
 
-async def handle_transaction(transaction_schema, session):
+
+async def handle_transaction(transaction_schema: TransactionSchema, session: AsyncSession) -> None:
+    """
+    Handles the transaction by updating the balances of the debit and credit accounts,
+    and creating a new transaction record in the database.
+
+    Args:
+        transaction_schema (TransactionSchema): The schema object containing transaction details.
+        session (AsyncSession): The SQLAlchemy session for database interactions.
+    """
     try:
         dao = TransactionDAO(session)
         debit_account_number = transaction_schema.debit_account_number
