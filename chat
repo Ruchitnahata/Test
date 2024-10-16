@@ -1,150 +1,16 @@
-import azure.functions as functions
-from helpers.transaction_handler import (
-    validate_transaction,
-    handle_transaction,
-    record_balance_history
-)
+class Base(DeclarativeBase, AsyncAttrs):
+    metadata = MetaData(naming_convention=naming_convention)
 
-# Create a new blueprint for the transaction processing
-transactions_blueprint = functions.Blueprint()
+    @classmethod
+    def _setup_class(cls):
+        """Import models to ensure they are loaded with the Base class."""
+        from models.account import Account  # Adjust the import path according to your project structure
+        from models.customer import Customer  # Adjust the import path according to your project structure
+        # Import any other models as needed
 
-@transactions_blueprint.function_name("process_transaction_request")
-@transactions_blueprint.route(route="transactions", methods=["POST"], auth_level="function")
-async def process_transaction_request(req: functions.HttpRequest) -> functions.HttpResponse:
-    """Main function to handle POST transactions"""
+        # Ensure all models are registered with the Base class
+        cls.registry.mappers.clear()  # Clear existing mappers
+        cls.registry.configure()  # Configure mappers
 
-    try:
-        # Step 1: Parse the request body
-        transaction_data = req.get_json()
-
-        # Step 2: Validate the transaction data (check if trace number exists, accounts exist, and sufficient funds)
-        validation_response = await validate_transaction(transaction_data)
-        if validation_response["status"] != 200:
-            return functions.HttpResponse(
-                validation_response["message"], status_code=validation_response["status"]
-            )
-
-        # Step 3: Process the transaction (update account balances)
-        await handle_transaction(transaction_data)
-
-        # Step 4: Record the balance history for both debit and credit accounts
-        await record_balance_history(transaction_data)
-
-        # Step 5: Return success (201)
-        return functions.HttpResponse(
-            "Transaction processed successfully", status_code=201
-        )
-
-    except Exception as e:
-        logging.error(f"Error processing transaction: {str(e)}")
-        return functions.HttpResponse(
-            "Transaction failed due to an internal error", status_code=500
-        )
-
-
-
-
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from models import Transaction, Account, AccountBalanceHistory
-from datetime import datetime
-import logging
-
-# Configure the async database engine and sessionmaker
-engine = create_async_engine('your_async_database_url')
-AsyncSession = async_sessionmaker(bind=engine, expire_on_commit=False)
-
-async def validate_transaction(transaction_data):
-    async with AsyncSession() as session:
-        try:
-            trace_number = transaction_data['trace_number']
-            debit_account_number = transaction_data['debit_account_number']
-            credit_account_number = transaction_data['credit_account_number']
-            transaction_amount = transaction_data['transaction_amount']
-
-            # Check if the trace number already exists
-            existing_transaction = await session.get(Transaction, trace_number)
-            if existing_transaction:
-                return {"message": "Transaction already exists", "status": 202}
-
-            # Check if accounts exist
-            debit_account = await session.get(Account, debit_account_number)
-            credit_account = await session.get(Account, credit_account_number)
-
-            if not debit_account or not credit_account:
-                return {"message": "One or both accounts not found", "status": 404}
-
-            # Check if the debit account has sufficient funds
-            if debit_account.available_balance < transaction_amount:
-                return {"message": "Insufficient funds in debit account", "status": 400}
-
-            return {"message": "Validation successful", "status": 200}
-        
-        except Exception as e:
-            logging.error(f"Error validating transaction: {str(e)}")
-            return {"message": "Internal validation error", "status": 500}
-
-
-async def handle_transaction(transaction_data):
-    async with AsyncSession() as session:
-        try:
-            debit_account_number = transaction_data['debit_account_number']
-            credit_account_number = transaction_data['credit_account_number']
-            transaction_amount = transaction_data['transaction_amount']
-
-            # Fetch debit and credit accounts
-            debit_account = await session.get(Account, debit_account_number)
-            credit_account = await session.get(Account, credit_account_number)
-
-            # Update balances
-            debit_account.available_balance -= transaction_amount
-            credit_account.available_balance += transaction_amount
-
-            # Create a new transaction entry
-            new_transaction = Transaction(
-                trace_number=transaction_data['trace_number'],
-                debit_account_number=debit_account_number,
-                credit_account_number=credit_account_number,
-                transaction_amount=transaction_amount,
-                withdrawal_description=transaction_data.get('withdrawal_description', ''),
-                deposit_description=transaction_data.get('deposit_description', ''),
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow()
-            )
-
-            session.add(new_transaction)
-            await session.commit()
-
-        except Exception as e:
-            logging.error(f"Error processing transaction: {str(e)}")
-            await session.rollback()
-
-
-async def record_balance_history(transaction_data):
-    async with AsyncSession() as session:
-        try:
-            debit_account_number = transaction_data['debit_account_number']
-            credit_account_number = transaction_data['credit_account_number']
-            transaction_amount = transaction_data['transaction_amount']
-
-            debit_account = await session.get(Account, debit_account_number)
-            credit_account = await session.get(Account, credit_account_number)
-
-            # Record balance history for debit and credit accounts
-            debit_history = AccountBalanceHistory(
-                account_number=debit_account_number,
-                balance_before=debit_account.available_balance + transaction_amount,
-                balance_after=debit_account.available_balance
-            )
-            credit_history = AccountBalanceHistory(
-                account_number=credit_account_number,
-                balance_before=credit_account.available_balance - transaction_amount,
-                balance_after=credit_account.available_balance
-            )
-
-            session.add(debit_history)
-            session.add(credit_history)
-            await session.commit()
-
-        except Exception as e:
-            logging.error(f"Error recording balance history: {str(e)}")
-            await session.rollback()
+# Call the setup method to import models
+Base._setup_class()
