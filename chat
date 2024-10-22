@@ -1,6 +1,91 @@
+import pytest
+from decimal import Decimal
+from sqlalchemy.ext.asyncio import AsyncSession
+from asynctest import CoroutineMock, MagicMock
+from helpers.helper import handle_transaction
+from models.transaction import TransactionSchema
+from dao.transaction_dao import TransactionDAO
+from dao.account_dao import AccountDAO
+
+@pytest.fixture
+def transaction_schema():
+    """ Fixture to provide a mock transaction schema object. """
+    return TransactionSchema(
+        trace_number="12345",
+        debit_account_number="DEBIT123",
+        credit_account_number="CREDIT456",
+        transaction_amount=Decimal('100.00'),
+        withdrawal_description="Debit transaction",
+        withdrawal_transaction_type_code="WT123",
+        deposit_transaction_type_code="DT456",
+        deposit_description="Credit transaction",
+        clearing_category_code="CLR123",
+        fund_type_code="FT123",
+        fund_type_detail_code="FTD456",
+        transaction_type="TYPE"
+    )
+
 @pytest.mark.asyncio
-async def test_validate_transaction_success(session, transaction_schema):
-    # The session here is the one created by the fixture
-    result = await validate_transaction(transaction_schema, session)
-    assert result["message"] == "Validation successful"
-    assert result["status"] == 200
+async def test_handle_transaction_success(session: AsyncSession, transaction_schema):
+    """
+    Test case for a successful transaction handled by the handle_transaction function.
+    """
+    # Mock the DAOs
+    transaction_dao = MagicMock(TransactionDAO)
+    transaction_dao.create_transaction = CoroutineMock()
+
+    account_dao = MagicMock(AccountDAO)
+    account_dao.get_account = CoroutineMock(side_effect=[
+        MagicMock(available_balance=Decimal('500.00'), current_balance=Decimal('500.00')),  # Debit account
+        MagicMock(available_balance=Decimal('300.00'), current_balance=Decimal('300.00'))   # Credit account
+    ])
+
+    # Inject DAOs into the session
+    session.transaction = transaction_dao
+    session.account = account_dao
+
+    # Call the function to handle the transaction
+    await handle_transaction(transaction_schema, session)
+
+    # Verify that balances were updated
+    debit_account = await account_dao.get_account(transaction_schema.debit_account_number)
+    credit_account = await account_dao.get_account(transaction_schema.credit_account_number)
+
+    assert debit_account.available_balance == Decimal('400.00')
+    assert debit_account.current_balance == Decimal('400.00')
+    assert credit_account.available_balance == Decimal('400.00')
+    assert credit_account.current_balance == Decimal('400.00')
+
+    # Check if the transaction was successfully created
+    transaction_dao.create_transaction.assert_called_once()
+
+    # Check if commit was called
+    session.commit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_transaction_rollback_on_error(session: AsyncSession, transaction_schema):
+    """
+    Test case to check if handle_transaction properly rolls back on errors.
+    """
+    # Mock the DAOs
+    transaction_dao = MagicMock(TransactionDAO)
+    # Simulate an exception during transaction creation
+    transaction_dao.create_transaction = CoroutineMock(side_effect=Exception("Database Error"))
+
+    account_dao = MagicMock(AccountDAO)
+    account_dao.get_account = CoroutineMock(side_effect=[
+        MagicMock(available_balance=Decimal('500.00'), current_balance=Decimal('500.00')),  # Debit account
+        MagicMock(available_balance=Decimal('300.00'), current_balance=Decimal('300.00'))   # Credit account
+    ])
+
+    # Inject DAOs into the session
+    session.transaction = transaction_dao
+    session.account = account_dao
+
+    # Expect the handle_transaction to raise an exception
+    with pytest.raises(Exception, match="Database Error"):
+        await handle_transaction(transaction_schema, session)
+
+    # Check if rollback was called
+    session.rollback.assert_called_once()
