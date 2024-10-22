@@ -1,114 +1,47 @@
-from decimal import Decimal
-from typing import Dict, Any
-from sqlalchemy.ext.asyncio import AsyncSession
-from models.transaction import Transaction, TransactionSchema
-from dao.transaction_dao import TransactionDAO
-from dao.account_dao import AccountDAO
-from helpers.event_hub_logger import EventHubLogger
-from helpers.exception_handling import ValidationError, DatabaseException
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.engine import URL
+from sqlalchemy_utils import create_database, drop_database, database_exists
+from database import Base, create_pg_url_from_env, create_db_and_tables_async
 
+# Create a test-specific engine and session for unit tests
+TEST_DB_URL = create_pg_url_from_env(database="test_realtimebalance")
 
-async def validate_transaction(logger: EventHubLogger, transaction_schema: TransactionSchema, session: AsyncSession) -> Dict[str, Any]:
+engine = create_async_engine(TEST_DB_URL, future=True)
+TestSessionLocal = sessionmaker(
+    bind=engine, 
+    class_=AsyncSession, 
+    expire_on_commit=False, 
+    autocommit=False, 
+    autoflush=False
+)
+
+@pytest.fixture(scope="session")
+async def create_test_database():
     """
-    Validates the transaction by checking if the transaction already exists,
-    verifying if both accounts exist, and ensuring sufficient funds in the debit account.
-
-    Args:
-        logger (EventHubLogger): The logger for event hub logging.
-        transaction_schema (TransactionSchema): The schema object containing transaction details.
-        session (AsyncSession): The SQLAlchemy session for database interactions.
-
-    Returns:
-        Dict[str, Any]: A dictionary with a message and status code indicating the result of the validation.
+    Fixture to create a test database and drop it after testing.
     """
-    try:
-        transaction_dao = TransactionDAO(session)
-        trace_number = transaction_schema.trace_number
-        debit_account_number = transaction_schema.debit_account_number
-        credit_account_number = transaction_schema.credit_account_number
-        transaction_amount = transaction_schema.transaction_amount
+    if not database_exists(TEST_DB_URL):
+        create_database(TEST_DB_URL)
+    
+    # Create tables in the test database
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
-        logger.log(f"Validating the transaction: {transaction_schema}")
+    yield  # Run tests
 
-        # Check if the trace number already exists
-        if await transaction_dao.transaction_exists(trace_number):
-            logger.log_warning(f"Duplicate record found - Not processing the transaction with trace_number {trace_number}.")
-            return {"message": f"Duplicate record found with {trace_number}.", "status": 202}
-
-        # Check if accounts exist
-        account_dao = AccountDAO(session)
-        debit_account = await account_dao.get_account(debit_account_number)
-        credit_account = await account_dao.get_account(credit_account_number)
-        if not debit_account:
-            logger.log_error(f"Debit account: {debit_account_number} not found.")
-            raise ValidationError("Debit account not found in the accounts table")
-        if not credit_account:
-            logger.log_error(f"Credit account: {credit_account_number} not found.")
-            raise ValidationError("Credit account not found in the accounts table")
-
-        # Check if the debit account has sufficient funds
-        if debit_account.available_balance < transaction_amount:
-            logger.log_error("Insufficient funds in debit account")
-            raise ValidationError("Insufficient funds in debit account")
-
-        return {"message": "Validation successful", "status": 200}
-
-    except Exception as error:
-        raise ValidationError(f"Error validating transaction: {str(error)}") from error
+    # Drop the test database after tests are done
+    await engine.dispose()
+    drop_database(TEST_DB_URL)
 
 
-async def handle_transaction(logger: EventHubLogger, transaction_schema: TransactionSchema, session: AsyncSession) -> None:
+@pytest.fixture(scope="function")
+async def session(create_test_database):
     """
-    Handles the transaction by updating the balances of the debit and credit accounts,
-    and creating a new transaction record in the database.
-
-    Args:
-        logger (EventHubLogger): The logger for event hub logging.
-        transaction_schema (TransactionSchema): The schema object containing transaction details.
-        session (AsyncSession): The SQLAlchemy session for database interactions.
+    Fixture to create a new session for each test.
     """
-    try:
-        transaction_dao = TransactionDAO(session)
-        debit_account_number = transaction_schema.debit_account_number
-        credit_account_number = transaction_schema.credit_account_number
-        transaction_amount = transaction_schema.transaction_amount
-
-        # Fetch debit and credit accounts
-        account_dao = AccountDAO(session)
-        debit_account = await account_dao.get_account(debit_account_number)
-        credit_account = await account_dao.get_account(credit_account_number)
-
-        # Update balances
-        logger.log("Updating the balances in account table")
-        debit_account.available_balance -= Decimal(transaction_amount)
-        credit_account.available_balance += Decimal(transaction_amount)
-        debit_account.current_balance -= Decimal(transaction_amount)
-        credit_account.current_balance += Decimal(transaction_amount)
-
-        # Create a new transaction entry
-        new_transaction = Transaction(
-            trace_number=transaction_schema.trace_number,
-            debit_account_number=debit_account_number,
-            credit_account_number=credit_account_number,
-            transaction_amount=transaction_amount,
-            withdrawal_description=transaction_schema.withdrawal_description,
-            withdrawal_transaction_type_code=transaction_schema.withdrawal_transaction_type_code,
-            deposit_transaction_type_code=transaction_schema.deposit_transaction_type_code,
-            deposit_description=transaction_schema.deposit_description,
-            clearing_category_code=transaction_schema.clearing_category_code,
-            fund_type_code=transaction_schema.fund_type_code,
-            fund_type_detail_code=transaction_schema.fund_type_detail_code,
-            transaction_type=transaction_schema.transaction_type
-        )
-
-        logger.log(f"Created new transaction in transaction table {new_transaction.__dict__}")
-
-        await transaction_dao.create_transaction(new_transaction)
-        await session.commit()
-
-    except DatabaseException as error:
-        logger.log_error(f"Database error occurred for update on Transaction exception table due to: {error}")
-        raise DatabaseException(error) from error
-    except Exception as error:
+    async with TestSessionLocal() as session:
+        async with session.begin():
+            yield session
         await session.rollback()
-        raise Exception(f"Error validating transaction: {str(error)}") from error
