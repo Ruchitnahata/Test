@@ -1,47 +1,6 @@
-import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.engine import URL
-from sqlalchemy_utils import create_database, drop_database, database_exists
-from database import Base, create_pg_url_from_env, create_db_and_tables_async
-
-# Create a test-specific engine and session for unit tests
-TEST_DB_URL = create_pg_url_from_env(database="test_realtimebalance")
-
-engine = create_async_engine(TEST_DB_URL, future=True)
-TestSessionLocal = sessionmaker(
-    bind=engine, 
-    class_=AsyncSession, 
-    expire_on_commit=False, 
-    autocommit=False, 
-    autoflush=False
-)
-
-@pytest.fixture(scope="session")
-async def create_test_database():
-    """
-    Fixture to create a test database and drop it after testing.
-    """
-    if not database_exists(TEST_DB_URL):
-        create_database(TEST_DB_URL)
-    
-    # Create tables in the test database
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    yield  # Run tests
-
-    # Drop the test database after tests are done
-    await engine.dispose()
-    drop_database(TEST_DB_URL)
-
-
-@pytest.fixture(scope="function")
-async def session(create_test_database):
-    """
-    Fixture to create a new session for each test.
-    """
-    async with TestSessionLocal() as session:
-        async with session.begin():
-            yield session
-        await session.rollback()
+@pytest.mark.asyncio
+async def test_validate_transaction_success(session, transaction_schema):
+    # The session here is the one created by the fixture
+    result = await validate_transaction(transaction_schema, session)
+    assert result["message"] == "Validation successful"
+    assert result["status"] == 200
