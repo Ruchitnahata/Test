@@ -1,76 +1,20 @@
-# dao/transaction_dao.py
-
-from models.account import Account
-from models.transaction import Transaction
-from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional
-from sqlalchemy import select
-
-class TransactionDAO:
-    def __init__(self, session: AsyncSession):
-        """
-        Initializes the TransactionDAO with the provided database session.
-        
-        Args:
-            session (AsyncSession): The SQLAlchemy session for database interactions.
-        """
-        self.session = session
-
-    async def transaction_exists(self, trace_number: str) -> Optional[Transaction]:
-        """
-        Checks if a transaction with the given trace number already exists in the database.
-        
-        Args:
-            trace_number (str): The trace number of the transaction.
-        
-        Returns:
-            Optional[Transaction]: The existing transaction if found, otherwise None.
-        """
-        query = select(Transaction).filter_by(trace_number=trace_number)
-        existing_transaction = await self.session.execute(query)
-        return existing_transaction.scalars().first()
-
-    async def get_account(self, account_number: str) -> Optional[Account]:
-        """
-        Fetches the account with the given account number from the database.
-        
-        Args:
-            account_number (str): The account number to look up.
-        
-        Returns:
-            Optional[Account]: The account if found, otherwise None.
-        """
-        query = select(Account).filter_by(account_number=account_number)
-        account = await self.session.execute(query)
-        return account.scalars().first()
-
-    async def create_transaction(self, transaction: Transaction) -> None:
-        """
-        Creates a new transaction in the database and commits the transaction.
-        
-        Args:
-            transaction (Transaction): The transaction object to be added to the database.
-        """
-        self.session.add(transaction)
-        await self.session.commit()
-
-
-# helpers/transaction_helpers.py
-
-from models.transaction import Transaction
-import logging
 from decimal import Decimal
-from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict, Any
-from dao.transaction_dao import TransactionDAO  # Importing the DAO
-from schemas.transaction_schema import TransactionSchema  # Assuming a schema file for validation
+from sqlalchemy.ext.asyncio import AsyncSession
+from models.transaction import Transaction, TransactionSchema
+from dao.transaction_dao import TransactionDAO
+from dao.account_dao import AccountDAO
+from helpers.event_hub_logger import EventHubLogger
+from helpers.exception_handling import ValidationError, DatabaseException
 
-async def validate_transaction(transaction_schema: TransactionSchema, session: AsyncSession) -> Dict[str, Any]:
+
+async def validate_transaction(logger: EventHubLogger, transaction_schema: TransactionSchema, session: AsyncSession) -> Dict[str, Any]:
     """
     Validates the transaction by checking if the transaction already exists,
     verifying if both accounts exist, and ensuring sufficient funds in the debit account.
 
     Args:
+        logger (EventHubLogger): The logger for event hub logging.
         transaction_schema (TransactionSchema): The schema object containing transaction details.
         session (AsyncSession): The SQLAlchemy session for database interactions.
 
@@ -78,56 +22,68 @@ async def validate_transaction(transaction_schema: TransactionSchema, session: A
         Dict[str, Any]: A dictionary with a message and status code indicating the result of the validation.
     """
     try:
-        async with session.begin():
-            dao = TransactionDAO(session)
-            trace_number = transaction_schema.trace_number
-            debit_account_number = transaction_schema.debit_account_number
-            credit_account_number = transaction_schema.credit_account_number
-            transaction_amount = transaction_schema.transaction_amount
+        transaction_dao = TransactionDAO(session)
+        trace_number = transaction_schema.trace_number
+        debit_account_number = transaction_schema.debit_account_number
+        credit_account_number = transaction_schema.credit_account_number
+        transaction_amount = transaction_schema.transaction_amount
 
-            # Check if the trace number already exists
-            if await dao.transaction_exists(trace_number):
-                return {"message": "Transaction already exists", "status": 202}
-            
-            # Check if accounts exist
-            debit_account = await dao.get_account(debit_account_number)
-            credit_account = await dao.get_account(credit_account_number)
-            if not debit_account or not credit_account:
-                return {"message": "One or both accounts not found", "status": 404}
+        logger.log(f"Validating the transaction: {transaction_schema}")
 
-            # Check if the debit account has sufficient funds
-            if debit_account.available_balance < transaction_amount:
-                return {"message": "Insufficient funds in debit account", "status": 400}
+        # Check if the trace number already exists
+        if await transaction_dao.transaction_exists(trace_number):
+            logger.log_warning(f"Duplicate record found - Not processing the transaction with trace_number {trace_number}.")
+            return {"message": f"Duplicate record found with {trace_number}.", "status": 202}
 
-            return {"message": "Validation successful", "status": 200}
-    
-    except Exception as e:
-        logging.error(f"Error validating transaction: {str(e)}")
-        return {"message": f"Internal validation error {str(e)}", "status": 500}
+        # Check if accounts exist
+        account_dao = AccountDAO(session)
+        debit_account = await account_dao.get_account(debit_account_number)
+        credit_account = await account_dao.get_account(credit_account_number)
+        if not debit_account:
+            logger.log_error(f"Debit account: {debit_account_number} not found.")
+            raise ValidationError("Debit account not found in the accounts table")
+        if not credit_account:
+            logger.log_error(f"Credit account: {credit_account_number} not found.")
+            raise ValidationError("Credit account not found in the accounts table")
+
+        # Check if the debit account has sufficient funds
+        if debit_account.available_balance < transaction_amount:
+            logger.log_error("Insufficient funds in debit account")
+            raise ValidationError("Insufficient funds in debit account")
+
+        return {"message": "Validation successful", "status": 200}
+
+    except Exception as error:
+        raise ValidationError(f"Error validating transaction: {str(error)}") from error
 
 
-async def handle_transaction(transaction_schema: TransactionSchema, session: AsyncSession) -> None:
+async def handle_transaction(logger: EventHubLogger, transaction_schema: TransactionSchema, session: AsyncSession) -> None:
     """
     Handles the transaction by updating the balances of the debit and credit accounts,
     and creating a new transaction record in the database.
 
     Args:
+        logger (EventHubLogger): The logger for event hub logging.
         transaction_schema (TransactionSchema): The schema object containing transaction details.
         session (AsyncSession): The SQLAlchemy session for database interactions.
     """
     try:
-        dao = TransactionDAO(session)
+        transaction_dao = TransactionDAO(session)
         debit_account_number = transaction_schema.debit_account_number
         credit_account_number = transaction_schema.credit_account_number
         transaction_amount = transaction_schema.transaction_amount
 
         # Fetch debit and credit accounts
-        debit_account = await dao.get_account(debit_account_number)
-        credit_account = await dao.get_account(credit_account_number)
+        account_dao = AccountDAO(session)
+        debit_account = await account_dao.get_account(debit_account_number)
+        credit_account = await account_dao.get_account(credit_account_number)
 
         # Update balances
+        logger.log("Updating the balances in account table")
         debit_account.available_balance -= Decimal(transaction_amount)
         credit_account.available_balance += Decimal(transaction_amount)
+        debit_account.current_balance -= Decimal(transaction_amount)
+        credit_account.current_balance += Decimal(transaction_amount)
 
         # Create a new transaction entry
         new_transaction = Transaction(
@@ -145,8 +101,14 @@ async def handle_transaction(transaction_schema: TransactionSchema, session: Asy
             transaction_type=transaction_schema.transaction_type
         )
 
-        await dao.create_transaction(new_transaction)
+        logger.log(f"Created new transaction in transaction table {new_transaction.__dict__}")
 
-    except Exception as e:
-        logging.error(f"Error processing transaction: {str(e)}")
+        await transaction_dao.create_transaction(new_transaction)
+        await session.commit()
+
+    except DatabaseException as error:
+        logger.log_error(f"Database error occurred for update on Transaction exception table due to: {error}")
+        raise DatabaseException(error) from error
+    except Exception as error:
         await session.rollback()
+        raise Exception(f"Error validating transaction: {str(error)}") from error
